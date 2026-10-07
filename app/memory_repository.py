@@ -9,6 +9,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
+from app.parser.body_reconcile import match_body_rows, reconcile_for_detail, tree_from_json
 from app.parser.html_sanitizer import escape_html
 from app.parser.models import ParsedMessage
 from app.threads import ThreadInput, compute_threads
@@ -109,6 +110,7 @@ class MemoryRepository:
                         "message_pk": message_pk,
                         "mime_path": body.mime_path,
                         "content_type": body.content_type,
+                        "text_source": body.text_source.value,
                         "charset": body.charset,
                         "declared_charset": body.declared_charset,
                         "disposition": body.disposition.value,
@@ -202,7 +204,9 @@ class MemoryRepository:
         if not m:
             return None
         out = dict(m)
-        out["bodies"] = [dict(b) for b in self.bodies if b["message_pk"] == pk]
+        brows = [dict(b) for b in self.bodies if b["message_pk"] == pk]
+        out["bodies"] = brows
+        out.update(reconcile_for_detail(brows, tree_from_json(m.get("tree_json"))))
         out["attachments"] = [dict(a) for a in self.attachments if a["message_pk"] == pk]
         out["defects"] = [
             {"stage": d["stage"], "level": d["level"], "message": d["message"]}
@@ -232,21 +236,45 @@ class MemoryRepository:
     def search_messages(self, query: str, limit: int = 50, offset: int = 0) -> dict[str, Any]:
         q = query.lower()
 
-        def match(m: dict[str, Any]) -> bool:
-            if (m["subject"] or "").lower().find(q) >= 0:
-                return True
-            if (m["message_id"] or "").lower().find(q) >= 0:
-                return True
-            for h in self.headers:
-                if h["message_id"] == m["id"] and h["value"].lower().find(q) >= 0:
-                    return True
-            for b in self.bodies:
-                if b["message_pk"] == m["id"] and (b.get("plain_text") or "").lower().find(q) >= 0:
-                    return True
-            return False
+        def match_locations(m: dict[str, Any]) -> dict[str, Any] | None:
+            """Return where the query hit (fields + body versions), else None.
 
-        hits = [self._summary(m) for m in self.messages.values() if match(m)]
-        return {"query": query, "count": len(hits), "results": hits[offset : offset + limit]}
+            Body matching runs over *readable plain text only*: the plain part
+            body or text derived from HTML. Raw/sanitized HTML is never read.
+            """
+            fields: list[str] = []
+            if (m["subject"] or "").lower().find(q) >= 0:
+                fields.append("subject")
+            if (m["message_id"] or "").lower().find(q) >= 0:
+                fields.append("message_id")
+            if any(
+                h["message_id"] == m["id"] and h["value"].lower().find(q) >= 0
+                for h in self.headers
+            ):
+                fields.append("headers")
+            brows = [b for b in self.bodies if b["message_pk"] == m["id"]]
+            body_hits = [bm.as_dict() for bm in match_body_rows(brows, query)]
+            if body_hits:
+                fields.append("body")
+            if not fields:
+                return None
+            return {"fields": fields, "body_matches": body_hits}
+
+        scored: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for m in self.messages.values():
+            loc = match_locations(m)
+            if loc is not None:
+                scored.append((self._summary(m), loc))
+        scored.sort(key=lambda pair: pair[0]["id"], reverse=True)
+        total = len(scored)
+        page = scored[offset : offset + limit]
+        results = []
+        for summary, loc in page:
+            summary = dict(summary)
+            summary["match_fields"] = loc["fields"]
+            summary["body_matches"] = loc["body_matches"]
+            results.append(summary)
+        return {"query": query, "count": total, "results": results}
 
     def get_thread(self, thread_key: str) -> dict[str, Any] | None:
         msgs = [m for m in self.messages.values() if m["thread_key"] == thread_key]

@@ -14,6 +14,7 @@ from email.message import Message
 from email.policy import SMTP
 from email.utils import getaddresses, parsedate_to_datetime
 
+from .body_reconcile import reconcile_parts
 from .html_sanitizer import sanitize_html, strip_to_text
 from .models import (
     Address,
@@ -25,6 +26,7 @@ from .models import (
     ParseStatus,
     PartNode,
     ParsedMessage,
+    TextSource,
 )
 
 # Message-ID / msg-id token: <left@right> or, for In-Reply-To legacy forms,
@@ -363,6 +365,7 @@ def parse_eml(data: bytes) -> ParsedMessage:
             content_location=content_location,
             byte_size=len(raw),
             text=text,
+            text_source=TextSource.HTML_DERIVED if ctype == "text/html" else TextSource.PLAIN,
         )
         if ctype == "text/html":
             body.safe_html, body.referenced_cids = sanitize_html(text)
@@ -373,6 +376,7 @@ def parse_eml(data: bytes) -> ParsedMessage:
 
     status = ParseStatus.OK if not defects else ParseStatus.DEFECTIVE
     tree = _build_tree(root)
+    body_versions, body_diffs = reconcile_parts(bodies, tree)
 
     return ParsedMessage(
         message_id=message_id,
@@ -394,6 +398,8 @@ def parse_eml(data: bytes) -> ParsedMessage:
         defects=defects,
         status=status,
         fatal_error=None,
+        body_versions=body_versions,
+        body_diffs=body_diffs,
         raw_sha256=raw_sha,
         raw_size=len(data),
     )

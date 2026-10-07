@@ -55,8 +55,11 @@ class MessageSummary(BaseModel):
 
 
 class BodyOut(BaseModel):
-    mime_path: str
-    content_type: str
+    # Legacy rows may lack a path/content type; such parts are surfaced as
+    # text_source="unknown" rather than being hidden or guessed at.
+    mime_path: str | None
+    content_type: str | None
+    text_source: str
     charset: str | None
     declared_charset: str | None
     disposition: str
@@ -67,6 +70,35 @@ class BodyOut(BaseModel):
     escaped_html: str | None = None
     plain_text: str | None = None
     referenced_cids: list[str] = Field(default_factory=list)
+
+
+class BodyVersionOut(BaseModel):
+    """Provenance for one readable rendition of a message body."""
+
+    mime_path: str | None
+    content_type: str | None
+    text_source: str  # plain | html_derived | unknown
+    source_label: str  # human-readable; "来源未知" for unrelatable legacy rows
+    charset: str | None = None
+    paragraphs: int
+    chars: int
+    known: bool
+
+
+class ParagraphNoteOut(BaseModel):
+    paragraph: str
+    present_in: list[str]
+
+
+class BodyDiffOut(BaseModel):
+    """Paragraph-level reconciliation of alternative body versions."""
+
+    group_key: str
+    alternative_path: str | None
+    relation: str  # alternative | standalone
+    agreed: bool
+    versions: list[BodyVersionOut]
+    paragraph_summary: dict[str, Any]
 
 
 class AttachmentOut(BaseModel):
@@ -100,14 +132,41 @@ class MessageDetail(MessageSummary):
     tree_json: dict[str, Any] | None
     raw_path: str | None
     bodies: list[BodyOut]
+    body_versions: list[BodyVersionOut] = Field(default_factory=list)
+    body_diffs: list[BodyDiffOut] = Field(default_factory=list)
     attachments: list[AttachmentOut]
     defects: list[DefectOut]
+
+
+class BodyMatchOut(BaseModel):
+    """Which body version a search hit came from, plus a safe text snippet."""
+
+    mime_path: str | None
+    content_type: str | None
+    text_source: str  # plain | html_derived | unknown
+    source_label: str
+    known: bool
+    snippet: str | None  # readable plain text only; HTML is never rendered
+
+
+class SearchResult(BaseModel):
+    id: int
+    ingest_id: int
+    message_id: str | None
+    subject: str | None
+    date: datetime | None
+    from_json: list[dict[str, Any]]
+    thread_key: str | None
+    raw_sha256: str
+    missing_id: bool
+    match_fields: list[str] = Field(default_factory=list)
+    body_matches: list[BodyMatchOut] = Field(default_factory=list)
 
 
 class SearchResponse(BaseModel):
     query: str
     count: int
-    results: list[dict[str, Any]]
+    results: list[SearchResult]
 
 
 class FailureOut(BaseModel):

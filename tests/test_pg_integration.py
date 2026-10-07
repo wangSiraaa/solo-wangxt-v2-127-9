@@ -91,6 +91,32 @@ def test_search_sql_joins(pg_client):
     assert c.get("/search", params={"q": "nothing-matches-zzz"}).json()["count"] == 0
 
 
+def test_body_versions_diffs_and_search_provenance(pg_client):
+    c, _ = pg_client
+    r = _post(c, "10_divergent.eml")
+    pk = r.json()["message_pk"]
+    msg = c.get(f"/messages/{pk}").json()
+    # versions carry text source provenance from the stored text_source column
+    assert {v["text_source"] for v in msg["body_versions"]} == {"plain", "html_derived"}
+    diff = msg["body_diffs"][0]
+    assert diff["relation"] == "alternative" and diff["agreed"] is False
+    assert diff["paragraph_summary"]["shared"] == ["sharedword appears in both versions."]
+
+    # HTML-only word finds one mail via the html_derived version
+    one = c.get("/search", params={"q": "htmlonly-token"}).json()
+    assert one["count"] == 1 and len(one["results"][0]["body_matches"]) == 1
+    assert one["results"][0]["body_matches"][0]["text_source"] == "html_derived"
+    # shared word: single mail, both sources
+    shared = c.get("/search", params={"q": "sharedword"}).json()
+    assert shared["count"] == 1
+    assert {m["text_source"] for m in shared["results"][0]["body_matches"]} == {
+        "plain",
+        "html_derived",
+    }
+    # script/handler tokens are not searchable
+    assert c.get("/search", params={"q": "htmlonlyTokenShouldNotLeak"}).json()["count"] == 0
+
+
 def test_idempotent_schema_init(pg_client):
     c, arch = pg_client
     # creating a second repository over the same DSN must not error on DDL

@@ -172,3 +172,109 @@ def test_message_ids_not_unique_across_ingests(client):
     ma = c.get(f"/messages/{a['message_pk']}").json()
     mb = c.get(f"/messages/{b['message_pk']}").json()
     assert ma["message_id"] == mb["message_id"] == "dup-1@example.com"
+
+
+# ---------- body version reconciliation ----------
+
+def _ingest(client_fixture, name):
+    c, _ = client_fixture
+    r = _post(c, name, (SAMPLES / name).read_bytes())
+    assert r.status_code == 201, r.text
+    return c, r.json()
+
+
+def test_detail_shows_body_versions_and_paragraph_diff(client):
+    c, body = _ingest(client, "10_divergent.eml")
+    detail = c.get(f"/messages/{body['message_pk']}").json()
+
+    sources = {v["mime_path"]: v["text_source"] for v in detail["body_versions"]}
+    assert sources == {"1": "plain", "2": "html_derived"}
+    assert all(v["known"] for v in detail["body_versions"])
+
+    assert len(detail["body_diffs"]) == 1
+    diff = detail["body_diffs"][0]
+    assert diff["relation"] == "alternative" and diff["agreed"] is False
+    summary = diff["paragraph_summary"]
+    assert summary["shared"] == ["sharedword appears in both versions."]
+    only = {n["paragraph"]: n["present_in"] for n in summary["only_in"]}
+    assert only["This paragraph exists only in the plain version."] == ["1"]
+    assert ["2"] == only["This paragraph exists only in html and carries the htmlonly-token."]
+
+
+def test_html_only_word_search_locates_html_derived(client):
+    c, _ = _ingest(client, "10_divergent.eml")
+    res = c.get("/search", params={"q": "htmlonly-token"}).json()
+    assert res["count"] == 1
+    matches = res["results"][0]["body_matches"]
+    assert len(matches) == 1
+    assert matches[0]["text_source"] == "html_derived"
+    assert matches[0]["mime_path"] == "2"
+    assert "htmlonly-token" in matches[0]["snippet"]
+
+
+def test_shared_word_single_mail_with_two_sources(client):
+    c, _ = _ingest(client, "10_divergent.eml")
+    res = c.get("/search", params={"q": "sharedword"}).json()
+    assert res["count"] == 1  # one mail, not one per version
+    matches = res["results"][0]["body_matches"]
+    assert {m["text_source"] for m in matches} == {"plain", "html_derived"}
+    assert {m["mime_path"] for m in matches} == {"1", "2"}
+
+
+def test_script_html_does_not_execute_in_snippet_or_detail(client):
+    c, _ = _ingest(client, "10_divergent.eml")
+    pk = c.get("/search", params={"q": "htmlonly-token"}).json()["results"][0]["id"]
+    # tokens that live only inside <script>/handlers must not be searchable
+    for leaked in ("htmlonlyTokenShouldNotLeak", "document.cookie", "onerror", "alert"):
+        assert c.get("/search", params={"q": leaked}).json()["count"] == 0
+
+    detail = c.get(f"/messages/{pk}").json()
+    # safe/derived views are script-free; escaped_html is a fully escaped
+    # document (inert forensic text), so it may quote the word "script" but
+    # must never contain a live <script tag or a live event handler.
+    safe = next(b["safe_html"] for b in detail["bodies"] if b["content_type"] == "text/html")
+    escaped = next(b["escaped_html"] for b in detail["bodies"] if b["content_type"] == "text/html")
+    assert "<script" not in safe and "onerror" not in safe
+    assert "<script" not in escaped and "<img" not in escaped  # tags are &lt;-escaped
+    derived = next(b["plain_text"] for b in detail["bodies"] if b["content_type"] == "text/html")
+    assert "fetch(" not in derived and "onerror" not in derived and "alert" not in derived
+
+    # snippets in search results carry no markup
+    for r in c.get("/search", params={"q": "sharedword"}).json()["results"]:
+        for m in r["body_matches"]:
+            assert "<" not in (m["snippet"] or "")
+    # the HTML body is stored only in sanitized/escaped forms, never raw text
+    html_body = next(b for b in detail["bodies"] if b["content_type"] == "text/html")
+    assert html_body["text"] is None
+    assert "<script" not in html_body["safe_html"]
+
+
+def test_legacy_unknown_provenance_is_marked_not_guessed(client):
+    c, arch = client
+    _, body = _ingest(client, "10_divergent.eml")
+    pk = body["message_pk"]
+    # emulate a legacy body row whose originating part no longer exists
+    arch.repo.bodies.append(
+        {
+            "message_pk": pk, "mime_path": None, "content_type": None,
+            "text_source": "unknown", "charset": None, "declared_charset": None,
+            "disposition": "unknown", "content_id": None, "content_location": None,
+            "byte_size": 5, "text": None, "safe_html": None, "escaped_html": None,
+            "plain_text": "legacyword from an unknown source", "referenced_cids": [],
+        }
+    )
+    detail = c.get(f"/messages/{pk}").json()
+    unknown = [v for v in detail["body_versions"] if v["text_source"] == "unknown"]
+    assert unknown and unknown[0]["source_label"] == "来源未知"
+    # it must not be merged into the alternative group
+    legacy_groups = [
+        d for d in detail["body_diffs"]
+        if any(v["text_source"] == "unknown" for v in d["versions"])
+    ]
+    assert len(legacy_groups) == 1 and legacy_groups[0]["relation"] == "standalone"
+
+    res = c.get("/search", params={"q": "legacyword"}).json()
+    assert res["count"] == 1
+    hit = res["results"][0]["body_matches"][0]
+    assert hit["known"] is False and hit["source_label"] == "来源未知"
+    assert hit["snippet"] == "legacyword from an unknown source"

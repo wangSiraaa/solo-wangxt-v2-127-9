@@ -12,7 +12,8 @@ There is **no frontend** — JSON HTTP API only.
 | Concern | How it is handled |
 |---|---|
 | Attachment path escape | Storage root is resolved once; sender-supplied names are reduced to one safe basename (`app/storage.py::safe_basename`) and bytes are written to **content-addressed** shard names. Every path is re-validated with `Path.relative_to(root)`. Downloads re-validate the stored path and serve a sanitized `Content-Disposition` filename. |
-| HTML / scripts / remote resources | HTML is stored only as: sanitized allow-list HTML (`safe_html`), fully escaped HTML (`escaped_html`), and extracted plain text. The stdlib allow-list sanitizer (`app/parser/html_sanitizer.py`) removes `<script>`, `<style>`, `<iframe>`, event handlers, `style=`/`class=`/`data=`, and **every** loading URL except inline `cid:` resources. Remote `http(s)`, protocol-relative, `data:`, `vbscript:` and `javascript:` loaders are stripped. |
+| HTML / scripts / remote resources | HTML is stored only as: sanitized allow-list HTML (`safe_html`), fully escaped HTML (`escaped_html`), and extracted plain text. The stdlib allow-list sanitizer (`app/parser/html_sanitizer.py`) removes `<script>`, `<style>`, `<iframe>`, event handlers, `style=`/`class=`/`data=`, and **every** loading URL except inline `cid:` resources. Remote `http(s)`, protocol-relative, `data:`, `vbscript:` and `javascript:` loaders are stripped. Body diffs and search snippets are built from **readable plain text only** (plain part body or HTML-derived text); raw/sanitized HTML is never rendered as a snippet. |
+| Body version reconciliation | A message's `text/plain` and `text/html` alternatives can disagree. Every readable part keeps its MIME path and an explicit **text source** (`plain` / `html_derived`). Versions are related only when the MIME tree gives them a common nearest `multipart/alternative` ancestor; the detail API returns per-group **paragraph-level diffs** (`shared`, `only_in`, `partial`, `agreed`). Search results stay one per message and list **which body version** each hit came from plus a safe snippet. Legacy rows whose originating part is unavailable are labeled `来源未知` (`text_source=unknown`) and are never matched into an alternative group or assigned a fabricated counterpart. |
 | Inline resources | `multipart/related` / `Content-ID` parts are parsed as binary attachments with `content_id`; HTML parts record `referenced_cids` — links are facts, nothing is fetched. |
 | Attachment bytes in logs | Only metadata is logged (content type, size, sha256, relative path). A test asserts payload markers never appear in log records. |
 | Upload size | Hard streaming cap (`EMLARCH_MAX_UPLOAD_BYTES`) before persistence. |
@@ -31,6 +32,12 @@ There is **no frontend** — JSON HTTP API only.
   dates, malformed Message-IDs, bad CTEs are collected per stage rather than
   raised. Results are `ok` / `defective` / `failed`; even `failed` uploads get
   an ingest row with the raw digest and defects.
+* **Body versions are reconciled**: each readable part records its MIME path
+  and text source; alternative versions are grouped solely via their shared
+  `multipart/alternative` ancestor (embedded `message/rfc822` resets the
+  lineage) and compared per paragraph. Parts without an alternative sibling,
+  and rows of unknown provenance, stay standalone — no correspondence is
+  invented.
 * **Provenance**: each ingest stores the raw EML sha256, size, on-disk path
   and the parsed result references the same digest.
 
@@ -54,9 +61,9 @@ Implemented in `app/threads.py` (pure function, unit tested):
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/ingest` | multipart upload of one `.eml`; returns status, digest, parts, attachments, threading report |
-| GET | `/messages` / `/messages/{id}` | list / full detail (tree, bodies, attachments, defects) |
+| GET | `/messages` / `/messages/{id}` | list / full detail (tree, body versions + paragraph diffs, bodies, attachments, defects) |
 | GET | `/messages/{id}/attachments/{aid}/download` | stream attachment bytes (path re-validated) |
-| GET | `/search?q=` | substring over subject, Message-ID, all header values, body plain text |
+| GET | `/search?q=` | substring over subject, Message-ID, all header values, readable body text; results include `match_fields` and `body_matches` (version + MIME path + text source + safe snippet) |
 | GET | `/threads` / `/threads/{key}` | thread summaries / ordered members with reference headers |
 | POST | `/threads/rebuild` | recompute all threads; returns conflicts/cycles/dangling/weak hints |
 | GET | `/ingests/{id}` | provenance: raw digest/path + every defect located by stage |
@@ -85,13 +92,14 @@ Without a DSN the service boots an in-memory repository (useful for demos).
 ls samples/
 # 01 multibyte/nested, 02 circular refs, 03 missing id + bogus charset,
 # 04 duplicate ids, 05 same subject different threads, 06 corrupt boundary,
-# 07 bad CTE, 08 path traversal attachment, 09 XSS/remote HTML
+# 07 bad CTE, 08 path traversal attachment, 09 XSS/remote HTML,
+# 10 divergent plain/HTML alternatives (version reconciliation)
 ```
 
 ### Tests
 
 ```bash
-.venv/bin/python -m pytest                       # 47 unit + API tests (memory backend)
+.venv/bin/python -m pytest                       # 60+ unit + API tests (memory backend)
 EMLARCH_RUN_PG_TESTS=1 EMLARCH_TEST_DSN='postgresql://postgres@/postgres?host=/tmp/pgsock&port=55432' \
   .venv/bin/python -m pytest                     # + real PostgreSQL integration tests
 ```
@@ -110,6 +118,7 @@ app/
   config.py            env-driven configuration (roots, cap, DSN)
   parser/
     eml_parser.py      stdlib email parsing, structural walk, charset ladder
+    body_reconcile.py  body version provenance, alternative grouping + paragraph diffs, safe snippets
     html_sanitizer.py  allow-list sanitizer + escaping + text extraction
     models.py          structured result dataclasses
   storage.py           ControlledStorage (path safety, 0600, metadata logs)

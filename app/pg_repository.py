@@ -9,6 +9,7 @@ from typing import Any, Sequence
 import psycopg
 from psycopg.types.json import Jsonb
 
+from app.parser.body_reconcile import match_body_rows, reconcile_for_detail, tree_from_json
 from app.parser.html_sanitizer import escape_html
 from app.parser.models import ParsedMessage
 from app.threads import ThreadInput, compute_threads
@@ -122,15 +123,16 @@ class PgRepository:
                     escaped = escape_html(body.text) if body.content_type == "text/html" else None
                     cur.execute(
                         """
-                        INSERT INTO bodies (message_pk, mime_path, content_type, charset,
+                        INSERT INTO bodies (message_pk, mime_path, content_type, text_source, charset,
                             declared_charset, disposition, content_id, content_location,
                             byte_size, text, safe_html, escaped_html, plain_text, referenced_cids)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                         """,
                         (
                             message_pk,
                             body.mime_path,
                             body.content_type,
+                            body.text_source.value,
                             body.charset,
                             body.declared_charset,
                             body.disposition.value,
@@ -242,12 +244,14 @@ class PgRepository:
             ("attachments", "attachments"),
             ("defects", "defects"),
         ):
-            cur.execute(f"SELECT * FROM {table} WHERE message_pk = %s ORDER BY id", (pk,))
+            order = "ORDER BY mime_path, id" if table == "bodies" else "ORDER BY id"
+            cur.execute(f"SELECT * FROM {table} WHERE message_pk = %s {order}", (pk,))
             c = [x.name for x in cur.description]
             msg[key] = [dict(zip(c, r)) for r in cur.fetchall()]
         cur.execute("SELECT raw_path FROM ingests WHERE id = %s", (msg["ingest_id"],))
         r = cur.fetchone()
         msg["raw_path"] = r[0] if r else None
+        msg.update(reconcile_for_detail(msg["bodies"], tree_from_json(msg.get("tree_json"))))
         return _jsonify(msg)
 
     def get_message(self, pk: int) -> dict[str, Any] | None:
@@ -285,25 +289,74 @@ class PgRepository:
     def search_messages(self, query: str, limit: int = 50, offset: int = 0) -> dict[str, Any]:
         like = f"%{query}%"
         with self.connect() as conn, conn.cursor() as cur:
+            # SQL only narrows candidates (parameterized); which body *version*
+            # matched and the safe snippet are derived in Python from readable
+            # plain text, so raw/sanitized HTML is never involved.
             cur.execute(
                 """
                 SELECT DISTINCT m.id, m.message_id, m.subject, m.date, m.from_json,
                        m.thread_key, m.raw_sha256, m.missing_id, m.ingest_id
                 FROM messages m
-                LEFT JOIN message_headers h ON h.message_id = m.id
-                LEFT JOIN bodies b ON b.message_pk = m.id
                 WHERE m.subject ILIKE %s
                    OR m.message_id ILIKE %s
-                   OR h.value ILIKE %s
-                   OR b.plain_text ILIKE %s
-                ORDER BY m.date DESC NULLS LAST
-                LIMIT %s OFFSET %s
+                   OR EXISTS (SELECT 1 FROM message_headers h
+                              WHERE h.message_id = m.id AND h.value ILIKE %s)
+                   OR EXISTS (SELECT 1 FROM bodies b
+                              WHERE b.message_pk = m.id
+                                AND (b.plain_text ILIKE %s OR b.text ILIKE %s))
                 """,
-                (like, like, like, like, limit, offset),
+                (like, like, like, like, like),
             )
             cols = [c.name for c in cur.description]
-            items = _jsonify([dict(zip(cols, r)) for r in cur.fetchall()])
-        return {"query": query, "count": len(items), "results": items}
+            candidates = [dict(zip(cols, r)) for r in cur.fetchall()]
+            if not candidates:
+                return {"query": query, "count": 0, "results": []}
+            pks = [c["id"] for c in candidates]
+            cur.execute(
+                "SELECT message_id, bool_or(value ILIKE %s) FROM message_headers "
+                "WHERE message_id = ANY(%s) GROUP BY message_id",
+                (like, pks),
+            )
+            header_hits = {pk: bool(flag) for pk, flag in cur.fetchall()}
+            cur.execute(
+                """
+                SELECT message_pk, mime_path, content_type, text_source, text, plain_text
+                FROM bodies WHERE message_pk = ANY(%s)
+                ORDER BY message_pk, mime_path, id
+                """,
+                (pks,),
+            )
+            bcols = [c.name for c in cur.description]
+            bodies_by_pk: dict[int, list[dict[str, Any]]] = {}
+            for row in cur.fetchall():
+                item = dict(zip(bcols, row))
+                bodies_by_pk.setdefault(item["message_pk"], []).append(item)
+
+        items: list[dict[str, Any]] = []
+        for c in candidates:
+            fields: list[str] = []
+            if c["subject"] and query.lower() in c["subject"].lower():
+                fields.append("subject")
+            if c["message_id"] and query.lower() in c["message_id"].lower():
+                fields.append("message_id")
+            if header_hits.get(c["id"]):
+                fields.append("headers")
+            body_matches = [bm.as_dict() for bm in match_body_rows(bodies_by_pk.get(c["id"], []), query)]
+            if body_matches:
+                fields.append("body")
+            if not fields:  # defensive: SQL semantics differ only on ILIKE quirks
+                continue
+            c["match_fields"] = fields
+            c["body_matches"] = body_matches
+            items.append(c)
+
+        items.sort(
+            key=lambda x: (x["date"] or datetime.min.replace(tzinfo=timezone.utc), x["id"]),
+            reverse=True,
+        )
+        total = len(items)
+        page = _jsonify(items[offset : offset + limit])
+        return {"query": query, "count": total, "results": page}
 
     def get_thread(self, thread_key: str) -> dict[str, Any] | None:
         with self.connect() as conn, conn.cursor() as cur:

@@ -209,6 +209,36 @@ def html_xss() -> bytes:
     )
 
 
+def divergent_alternatives() -> bytes:
+    """multipart/alternative whose plain and HTML versions disagree.
+
+    A token exists only in the HTML rendition ("htmlonly-token"); a shared
+    token appears in both ("sharedword"); a paragraph exists only in plain.
+    The HTML part also contains a script that must never surface in snippets.
+    """
+    return (
+        b"Message-ID: <diverge-01@example.com>\r\n"
+        b"From: diverge@example.com\r\n"
+        b"Subject: Divergent alternatives demo\r\n"
+        b"Date: Tue, 30 Sep 2026 15:00:00 +0000\r\n"
+        b"MIME-Version: 1.0\r\n"
+        b'Content-Type: multipart/alternative; boundary="ALT"\r\n\r\n'
+        b"--ALT\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n\r\n"
+        b"sharedword appears in both versions.\r\n"
+        b"This paragraph exists only in the plain version.\r\n"
+        b"--ALT\r\n"
+        b"Content-Type: text/html; charset=utf-8\r\n\r\n"
+        b"<html><body>"
+        b"<script>var htmlonlyTokenShouldNotLeak='evil';</script>"
+        b"<p>sharedword appears in both versions.</p>"
+        b"<p>This paragraph exists only in html and carries the htmlonly-token.</p>"
+        b"<img src=x onerror=alert(1) alt=safealttext>"
+        b"</body></html>"
+        b"\r\n--ALT--\r\n"
+    )
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     write("01_multibyte.eml", multibyte())
@@ -223,6 +253,7 @@ def main() -> None:
     write("07_bad_cte.eml", bad_cte())
     write("08_traversal.eml", traversal_attachment())
     write("09_html_xss.eml", html_xss())
+    write("10_divergent.eml", divergent_alternatives())
 
 
 if __name__ == "__main__":

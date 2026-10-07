@@ -64,6 +64,8 @@ CREATE TABLE IF NOT EXISTS bodies (
     message_pk      BIGINT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
     mime_path       TEXT NOT NULL,
     content_type    TEXT NOT NULL,
+    text_source     TEXT NOT NULL DEFAULT 'unknown'
+                    CHECK (text_source IN ('plain','html_derived','unknown')),
     charset         TEXT,
     declared_charset TEXT,
     disposition     TEXT NOT NULL,
@@ -76,6 +78,13 @@ CREATE TABLE IF NOT EXISTS bodies (
     plain_text      TEXT,
     referenced_cids JSONB NOT NULL DEFAULT '[]'
 );
+-- Pre-existing databases: add the column (default 'unknown' so legacy rows are
+-- explicitly marked 来源未知 rather than having a source guessed for them).
+ALTER TABLE bodies ADD COLUMN IF NOT EXISTS text_source TEXT NOT NULL DEFAULT 'unknown';
+DO $$ BEGIN
+    ALTER TABLE bodies ADD CONSTRAINT bodies_text_source_check
+        CHECK (text_source IN ('plain','html_derived','unknown'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 CREATE INDEX IF NOT EXISTS idx_bodies_message ON bodies(message_pk);
 CREATE INDEX IF NOT EXISTS idx_bodies_cid ON bodies(content_id);
 

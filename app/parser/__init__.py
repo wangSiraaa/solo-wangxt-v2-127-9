@@ -1,14 +1,31 @@
+from .body_reconcile import (
+    BodyMatch,
+    LABEL_HTML_DERIVED,
+    LABEL_PLAIN,
+    LABEL_UNKNOWN,
+    match_body_rows,
+    reconcile_parts,
+    reconcile_rows,
+    safe_snippet,
+    source_label,
+    split_paragraphs,
+    tree_from_json,
+)
 from .eml_parser import ParseFailure, parse_eml
 from .html_sanitizer import escape_html, sanitize_html, strip_to_text
 from .models import (
     Address,
     Attachment,
+    BodyDiff,
     BodyPart,
+    BodyVersion,
     ContentDisposition,
     Defect,
+    ParagraphNote,
     ParseStatus,
     PartNode,
     ParsedMessage,
+    TextSource,
 )
 
 __all__ = [
@@ -19,10 +36,25 @@ __all__ = [
     "strip_to_text",
     "ParsedMessage",
     "BodyPart",
+    "BodyVersion",
+    "BodyDiff",
+    "BodyMatch",
+    "ParagraphNote",
+    "TextSource",
     "Attachment",
     "Address",
     "Defect",
     "PartNode",
     "ParseStatus",
     "ContentDisposition",
+    "reconcile_parts",
+    "reconcile_rows",
+    "match_body_rows",
+    "safe_snippet",
+    "source_label",
+    "split_paragraphs",
+    "LABEL_PLAIN",
+    "LABEL_HTML_DERIVED",
+    "LABEL_UNKNOWN",
+    "tree_from_json",
 ]

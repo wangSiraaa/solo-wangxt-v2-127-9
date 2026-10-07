@@ -22,6 +22,20 @@ class ContentDisposition(str, Enum):
     UNKNOWN = "unknown"
 
 
+class TextSource(str, Enum):
+    """Where the readable text of a body part came from.
+
+    HTML parts are never indexed/snippet-rendered from raw markup; only text
+    derived with the allow-list extractor is ever treated as readable text.
+    ``UNKNOWN`` is reserved for legacy rows whose originating part/text kind
+    can no longer be determined — correspondence must not be fabricated.
+    """
+
+    PLAIN = "plain"  # text/plain part, text is the decoded part body
+    HTML_DERIVED = "html_derived"  # text/html part, text extracted from the HTML
+    UNKNOWN = "unknown"  # legacy body row; originating part unavailable
+
+
 @dataclass(frozen=True)
 class Address:
     display_name: str
@@ -55,11 +69,65 @@ class BodyPart:
     content_location: str | None
     byte_size: int
     text: str
+    # Provenance of the readable text for this part. Plain parts carry the
+    # decoded part body; HTML parts are only ever read via derived plain text.
+    text_source: TextSource = TextSource.PLAIN
     # html variants are None for text/plain; see sanitize_html()
     safe_html: str | None = None
     plain_text: str | None = None
     # Inline resource cids this html part references (via cid: URIs)
     referenced_cids: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class BodyVersion:
+    """One readable rendition of a message body, with full provenance.
+
+    ``paragraphs``/``chars`` describe the readable text; the text itself is
+    always *readable plain text only* (never raw HTML) wherever it is read.
+    """
+
+    mime_path: str | None  # MIME path of the originating part; None => legacy
+    content_type: str | None  # "text/plain" / "text/html"; None => unknown
+    text_source: TextSource
+    source_label: str  # human-readable provenance label (may be 来源未知)
+    charset: str | None = None
+    paragraphs: int = 0  # number of readable paragraphs
+    chars: int = 0
+    known: bool = True  # False when originating parts are unavailable
+
+
+@dataclass(frozen=True)
+class ParagraphNote:
+    """One explainable paragraph-level difference.
+
+    ``paragraph`` is the normalized paragraph text, ``present_in`` lists the
+    version keys (mime paths) that contain it. ``shared``/``only_in`` on the
+    enclosing diff explain the cross-version relationship.
+    """
+
+    paragraph: str
+    present_in: list[str]
+
+
+@dataclass(frozen=True)
+class BodyDiff:
+    """Paragraph-level reconciliation of alternative body versions.
+
+    Versions are grouped by their nearest ``multipart/alternative`` ancestor,
+    which is the only relationship the MIME structure actually asserts. Parts
+    with no alternative sibling stay in single-version groups — no
+    correspondence is invented for them.
+    """
+
+    group_key: str  # mime path of the alternative container, or the part path
+    alternative_path: str | None  # container MIME path; None => standalone
+    relation: str  # "alternative" or "standalone"
+    versions: list[BodyVersion]
+    agreed: bool  # True when every version has the same paragraph set
+    shared: list[str] = field(default_factory=list)  # paragraphs in all versions
+    unique: list[ParagraphNote] = field(default_factory=list)  # only_in notes
+    partial: list[ParagraphNote] = field(default_factory=list)  # subset of versions
 
 
 @dataclass
@@ -127,6 +195,9 @@ class ParsedMessage:
     defects: list[Defect]
     status: ParseStatus
     fatal_error: str | None = None
+    # Body version reconciliation (filled by the parser after the walk)
+    body_versions: list[BodyVersion] = field(default_factory=list)
+    body_diffs: list[BodyDiff] = field(default_factory=list)
     # Filled by caller (parser operates on bytes only)
     raw_sha256: str | None = None
     raw_size: int | None = None

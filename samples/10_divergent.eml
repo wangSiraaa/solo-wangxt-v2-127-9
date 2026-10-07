@@ -1,0 +1,17 @@
+Message-ID: <diverge-01@example.com>
+From: diverge@example.com
+Subject: Divergent alternatives demo
+Date: Tue, 30 Sep 2026 15:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="ALT"
+
+--ALT
+Content-Type: text/plain; charset=utf-8
+
+sharedword appears in both versions.
+This paragraph exists only in the plain version.
+--ALT
+Content-Type: text/html; charset=utf-8
+
+<html><body><script>var htmlonlyTokenShouldNotLeak='evil';</script><p>sharedword appears in both versions.</p><p>This paragraph exists only in html and carries the htmlonly-token.</p><img src=x onerror=alert(1) alt=safealttext></body></html>
+--ALT--
