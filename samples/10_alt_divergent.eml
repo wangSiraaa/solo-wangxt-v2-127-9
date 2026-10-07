@@ -1,0 +1,20 @@
+Message-ID: <alt-div-01@example.com>
+From: versions@example.com
+Subject: Divergent alternatives
+Date: Tue, 30 Sep 2026 15:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="ALTD"
+
+--ALTD
+Content-Type: text/plain; charset=utf-8
+
+Quarterly meeting notes.
+
+The venue is the north hall.
+
+Please print this email before the meeting.
+--ALTD
+Content-Type: text/html; charset=utf-8
+
+<html><body><script>var doom='SCRIPTMARKERDOOM';</script><p>Quarterly meeting notes.</p><p>The venue moved to the south hall.</p><p>New HTML-only line: ZEPPELINUNIQUE briefing attached.</p></body></html>
+--ALTD--

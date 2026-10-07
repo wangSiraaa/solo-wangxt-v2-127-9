@@ -209,6 +209,43 @@ def html_xss() -> bytes:
     )
 
 
+def alt_divergent() -> bytes:
+    """multipart/alternative whose plain and html versions disagree.
+
+    Both versions share wording ("quarterly meeting notes"); the HTML version
+    alone contains a marker word and drops a plain-only instruction; a shared
+    paragraph is reworded. The HTML also carries a script whose payload must
+    never surface in snippets, diffs or sanitized HTML.
+    """
+    plain = (
+        b"Quarterly meeting notes.\r\n\r\n"
+        b"The venue is the north hall.\r\n\r\n"
+        b"Please print this email before the meeting.\r\n"
+    )
+    html = (
+        b"<html><body>"
+        b"<script>var doom='SCRIPTMARKERDOOM';</script>"
+        b"<p>Quarterly meeting notes.</p>"
+        b"<p>The venue moved to the south hall.</p>"
+        b"<p>New HTML-only line: ZEPPELINUNIQUE briefing attached.</p>"
+        b"</body></html>"
+    )
+    return (
+        b"Message-ID: <alt-div-01@example.com>\r\n"
+        b"From: versions@example.com\r\nSubject: Divergent alternatives\r\n"
+        b"Date: Tue, 30 Sep 2026 15:00:00 +0000\r\n"
+        b"MIME-Version: 1.0\r\n"
+        b'Content-Type: multipart/alternative; boundary="ALTD"\r\n\r\n'
+        b"--ALTD\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n\r\n"
+        + plain
+        + b"--ALTD\r\n"
+        b"Content-Type: text/html; charset=utf-8\r\n\r\n"
+        + html
+        + b"\r\n--ALTD--\r\n"
+    )
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     write("01_multibyte.eml", multibyte())
@@ -223,6 +260,7 @@ def main() -> None:
     write("07_bad_cte.eml", bad_cte())
     write("08_traversal.eml", traversal_attachment())
     write("09_html_xss.eml", html_xss())
+    write("10_alt_divergent.eml", alt_divergent())
 
 
 if __name__ == "__main__":

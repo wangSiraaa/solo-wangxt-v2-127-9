@@ -67,6 +67,48 @@ class BodyOut(BaseModel):
     escaped_html: str | None = None
     plain_text: str | None = None
     referenced_cids: list[str] = Field(default_factory=list)
+    # Provenance of the searchable text:
+    # plain_part (raw text of text/plain) | html_derived (extracted) | unknown.
+    text_source: str = "unknown"
+    alt_relation: str = "unknown"
+    alternative_path: str | None = None
+
+
+class BodyVersionOut(BaseModel):
+    mime_path: str | None = None
+    content_type: str | None = None
+    relation: str
+    text_source: str
+
+
+class ParagraphDiffOut(BaseModel):
+    kind: str
+    left_path: str | None
+    right_path: str | None
+    left_text: str | None
+    right_text: str | None
+
+
+class BodyGroupOut(BaseModel):
+    group_key: str | None = None
+    alternative_path: str | None = None
+    # stored | reconstructed | unknown — unknown means "来源未知"
+    provenance: str
+    versions: list[BodyVersionOut]
+    compared: bool
+    # identical | divergent | unpaired | source_unknown
+    status: str
+    summary: dict[str, int] = Field(default_factory=dict)
+    paragraph_diffs: list[ParagraphDiffOut] = Field(default_factory=list)
+
+
+class BodyMatchOut(BaseModel):
+    mime_path: str | None = None
+    content_type: str | None = None
+    relation: str
+    text_source: str
+    match_count: int
+    snippet: str  # escaped plain text; never raw/sanitized HTML
 
 
 class AttachmentOut(BaseModel):
@@ -100,6 +142,7 @@ class MessageDetail(MessageSummary):
     tree_json: dict[str, Any] | None
     raw_path: str | None
     bodies: list[BodyOut]
+    body_groups: list[BodyGroupOut] = Field(default_factory=list)
     attachments: list[AttachmentOut]
     defects: list[DefectOut]
 

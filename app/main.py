@@ -140,7 +140,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/search", response_model=SearchResponse, tags=["messages"])
     def search(
         request: Request,
-        q: str = Query(..., min_length=1, description="substring over subject/ids/headers/plain text"),
+        q: str = Query(
+            ...,
+            min_length=1,
+            description=(
+                "substring over subject/ids/headers/readable body text. One "
+                "result per message; body_matches lists every body version "
+                "containing the hit (plain part vs html-derived) with an "
+                "escaped plain-text snippet. Raw/sanitized HTML is never "
+                "returned in a snippet."
+            ),
+        ),
         limit: int = Query(50, ge=1, le=500),
         offset: int = Query(0, ge=0),
     ) -> dict[str, Any]:

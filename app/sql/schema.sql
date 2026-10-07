@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS messages (
     raw_path        TEXT,
     thread_key      TEXT,
     missing_id      BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Reconciliation of the readable body versions (plain vs html-derived);
+    -- NULL for rows ingested before body-version tracking existed.
+    body_groups     JSONB,
     search_tsv      TSVECTOR,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -74,10 +77,28 @@ CREATE TABLE IF NOT EXISTS bodies (
     safe_html       TEXT,
     escaped_html    TEXT,
     plain_text      TEXT,
-    referenced_cids JSONB NOT NULL DEFAULT '[]'
+    referenced_cids JSONB NOT NULL DEFAULT '[]',
+    -- Provenance of the searchable text: raw text of the plain part, text
+    -- derived from the HTML part, or unknown (legacy rows / lost originals).
+    text_source         TEXT NOT NULL DEFAULT 'unknown'
+                            CHECK (text_source IN ('plain_part','html_derived','unknown')),
+    alt_relation        TEXT NOT NULL DEFAULT 'unknown'
+                            CHECK (alt_relation IN ('text_plain','text_html','other','unknown')),
+    alternative_path    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_bodies_message ON bodies(message_pk);
 CREATE INDEX IF NOT EXISTS idx_bodies_cid ON bodies(content_id);
+CREATE INDEX IF NOT EXISTS idx_bodies_plain_text ON bodies(plain_text);
+
+-- Idempotent upgrades for databases created before body-version tracking.
+-- Legacy rows keep the 'unknown' default: their origin cannot be proven from
+-- stored facts, and the read layer reports "来源未知" rather than guessing.
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS body_groups JSONB;
+ALTER TABLE bodies ADD COLUMN IF NOT EXISTS text_source TEXT NOT NULL DEFAULT 'unknown'
+    CHECK (text_source IN ('plain_part','html_derived','unknown'));
+ALTER TABLE bodies ADD COLUMN IF NOT EXISTS alt_relation TEXT NOT NULL DEFAULT 'unknown'
+    CHECK (alt_relation IN ('text_plain','text_html','other','unknown'));
+ALTER TABLE bodies ADD COLUMN IF NOT EXISTS alternative_path TEXT;
 
 CREATE TABLE IF NOT EXISTS attachments (
     id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

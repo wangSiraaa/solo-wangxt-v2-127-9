@@ -9,6 +9,12 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
+from app.body_facts import (
+    assemble_body_groups,
+    body_matches,
+    body_row_extras,
+    groups_to_json,
+)
 from app.parser.html_sanitizer import escape_html
 from app.parser.models import ParsedMessage
 from app.threads import ThreadInput, compute_threads
@@ -76,6 +82,7 @@ class MemoryRepository:
                 "reply_to_json": _addr_json(parsed.reply_to),
                 "sender_json": _addr_json(parsed.sender),
                 "tree_json": asdict(parsed.tree) if parsed.tree else None,
+                "body_groups": groups_to_json(parsed.body_groups),
                 "raw_sha256": parsed.raw_sha256,
                 "raw_path": raw_relpath,
                 "thread_key": None,
@@ -104,24 +111,24 @@ class MemoryRepository:
                 for i, v in enumerate(parsed.in_reply_to)
             )
             for body in parsed.bodies:
-                self.bodies.append(
-                    {
-                        "message_pk": message_pk,
-                        "mime_path": body.mime_path,
-                        "content_type": body.content_type,
-                        "charset": body.charset,
-                        "declared_charset": body.declared_charset,
-                        "disposition": body.disposition.value,
-                        "content_id": body.content_id,
-                        "content_location": body.content_location,
-                        "byte_size": body.byte_size,
-                        "text": body.text if body.content_type == "text/plain" else None,
-                        "safe_html": body.safe_html,
-                        "escaped_html": escape_html(body.text) if body.content_type == "text/html" else None,
-                        "plain_text": body.plain_text,
-                        "referenced_cids": list(body.referenced_cids),
-                    }
-                )
+                row = {
+                    "message_pk": message_pk,
+                    "mime_path": body.mime_path,
+                    "content_type": body.content_type,
+                    "charset": body.charset,
+                    "declared_charset": body.declared_charset,
+                    "disposition": body.disposition.value,
+                    "content_id": body.content_id,
+                    "content_location": body.content_location,
+                    "byte_size": body.byte_size,
+                    "text": body.text if body.content_type == "text/plain" else None,
+                    "safe_html": body.safe_html,
+                    "escaped_html": escape_html(body.text) if body.content_type == "text/html" else None,
+                    "plain_text": body.plain_text,
+                    "referenced_cids": list(body.referenced_cids),
+                }
+                row.update(body_row_extras(body))
+                self.bodies.append(row)
             for att in parsed.attachments:
                 self._att_seq += 1
                 self.attachments.append(
@@ -209,6 +216,7 @@ class MemoryRepository:
             for d in self.defects
             if d["message_pk"] == pk
         ]
+        assemble_body_groups(out)
         return out
 
     def get_ingest(self, ingest_id: int) -> dict[str, Any] | None:
@@ -232,21 +240,35 @@ class MemoryRepository:
     def search_messages(self, query: str, limit: int = 50, offset: int = 0) -> dict[str, Any]:
         q = query.lower()
 
-        def match(m: dict[str, Any]) -> bool:
-            if (m["subject"] or "").lower().find(q) >= 0:
-                return True
-            if (m["message_id"] or "").lower().find(q) >= 0:
-                return True
-            for h in self.headers:
-                if h["message_id"] == m["id"] and h["value"].lower().find(q) >= 0:
-                    return True
-            for b in self.bodies:
-                if b["message_pk"] == m["id"] and (b.get("plain_text") or "").lower().find(q) >= 0:
-                    return True
-            return False
+        def match(m: dict[str, Any]) -> dict[str, Any] | None:
+            fields = {
+                "subject": (m["subject"] or "").lower().find(q) >= 0,
+                "message_id": (m["message_id"] or "").lower().find(q) >= 0,
+                "headers": any(
+                    h["message_id"] == m["id"] and h["value"].lower().find(q) >= 0
+                    for h in self.headers
+                ),
+            }
+            bodies = [b for b in self.bodies if b["message_pk"] == m["id"]]
+            hits = body_matches(bodies, query)
+            if not any(fields.values()) and not hits:
+                return None
+            summary = self._summary(m)
+            summary["matched_fields"] = [name for name, hit in fields.items() if hit] + (
+                ["body"] if hits else []
+            )
+            summary["body_matches"] = hits
+            return summary
 
-        hits = [self._summary(m) for m in self.messages.values() if match(m)]
-        return {"query": query, "count": len(hits), "results": hits[offset : offset + limit]}
+        hits = [row for m in self.messages.values() if (row := match(m))]
+        # Newest first (NULL dates last), matching the SQL backend; dedup is
+        # inherent because matching runs once per message.
+        hits.sort(
+            key=lambda r: (r["date"] is not None, r["date"] or datetime.min.replace(tzinfo=timezone.utc), r["id"]),
+            reverse=True,
+        )
+        page = hits[offset : offset + limit]
+        return {"query": query, "count": len(page), "total": len(hits), "results": page}
 
     def get_thread(self, thread_key: str) -> dict[str, Any] | None:
         msgs = [m for m in self.messages.values() if m["thread_key"] == thread_key]

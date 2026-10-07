@@ -14,3 +14,4 @@ storage or threading boundary:
 | `07_bad_cte.eml` | invalid base64 content-transfer-encoding payload |
 | `08_traversal.eml` | `../` and RFC2231 `%2f` traversal in attachment filename |
 | `09_html_xss.eml` | script/iframe/style, event handlers, remote `src`, `javascript:` link, one valid `cid:` image |
+| `10_alt_divergent.eml` | `multipart/alternative` whose plain and HTML versions diverge: shared paragraph, reworded paragraph, one-side-only paragraphs, HTML-only word, and an inline `<script>` whose payload must stay unsearchable |

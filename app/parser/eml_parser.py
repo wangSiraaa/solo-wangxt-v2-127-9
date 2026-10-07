@@ -25,6 +25,7 @@ from .models import (
     ParseStatus,
     PartNode,
     ParsedMessage,
+    TextSource,
 )
 
 # Message-ID / msg-id token: <left@right> or, for In-Reply-To legacy forms,
@@ -363,6 +364,9 @@ def parse_eml(data: bytes) -> ParsedMessage:
             content_location=content_location,
             byte_size=len(raw),
             text=text,
+            text_source=(
+                TextSource.HTML_DERIVED if ctype == "text/html" else TextSource.PLAIN_PART
+            ),
         )
         if ctype == "text/html":
             body.safe_html, body.referenced_cids = sanitize_html(text)
@@ -373,6 +377,13 @@ def parse_eml(data: bytes) -> ParsedMessage:
 
     status = ParseStatus.OK if not defects else ParseStatus.DEFECTIVE
     tree = _build_tree(root)
+    # Group the readable versions by their real multipart/alternative nesting
+    # and produce paragraph-level reconciliation; also fills provenance fields.
+    # Imported lazily: app.body_compare imports app.parser.models, which would
+    # otherwise form an import cycle while this module is initializing.
+    from ..body_compare import build_body_groups
+
+    body_groups = build_body_groups(tree, bodies)
 
     return ParsedMessage(
         message_id=message_id,
@@ -390,6 +401,7 @@ def parse_eml(data: bytes) -> ParsedMessage:
         headers=headers,
         tree=tree,
         bodies=bodies,
+        body_groups=body_groups,
         attachments=attachments,
         defects=defects,
         status=status,
